@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
@@ -29,6 +29,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Estado del procesamiento de video para consultar desde el frontend
+VIDEO_STATUS = {
+    "processing": False,
+    "filename": "",
+    "frames_processed": 0,
+    "faces_found": 0
+}
+
 
 # --- CARGA DE MODELOS DE IA ---
 # Se descargan automáticamente la primera vez
@@ -161,75 +170,94 @@ def build_response():
 
 # --- NUEVA LÓGICA PARA VIDEO ---
 
-def process_video_file(file_path, frame_skip=24):
+def process_video_task(temp_file_path, original_filename, frame_skip=24):
     """
-    Lee un video y extrae rostros.
-    frame_skip: Cada cuántos frames analizar (24 aprox = 1 segundo)
+    Esta función correrá en un HILO SEPARADO (Background).
     """
-    global ALL_FACES_DB
+    global ALL_FACES_DB, VIDEO_STATUS
     
-    cap = cv2.VideoCapture(file_path)
+    # 1. Actualizar estado: INICIO
+    VIDEO_STATUS["processing"] = True
+    VIDEO_STATUS["filename"] = original_filename
+    VIDEO_STATUS["frames_processed"] = 0
+    VIDEO_STATUS["faces_found"] = 0
+
+    cap = cv2.VideoCapture(temp_file_path)
     count = 0
-    faces_found = 0
     
-    print(f"Iniciando procesamiento de video: {file_path}")
+    print(f"--> Hilo: Iniciando video {original_filename}")
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break # Fin del video
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break 
 
-        # Procesamos solo 1 de cada 'frame_skip' frames para velocidad
-        if count % frame_skip == 0:
-            try:
-                # OpenCV usa BGR, PIL usa RGB. Convertimos:
-                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(image_rgb)
+            if count % frame_skip == 0:
+                try:
+                    # Conversión color
+                    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(image_rgb)
 
-                # --- EL MISMO PROCESO DE SIEMPRE ---
-                x_aligned = mtcnn(pil_img)
+                    # Detección (MTCNN)
+                    x_aligned = mtcnn(pil_img)
 
-                if x_aligned is not None:
-                    # Asegurar dimensiones
-                    if len(x_aligned.shape) == 3:
-                        x_aligned = x_aligned.unsqueeze(0)
-                    
-                    x_aligned = x_aligned.to(device)
-                    embeddings = resnet(x_aligned).detach().cpu()
+                    if x_aligned is not None:
+                        if len(x_aligned.shape) == 3:
+                            x_aligned = x_aligned.unsqueeze(0)
+                        
+                        x_aligned = x_aligned.to(device)
+                        embeddings = resnet(x_aligned).detach().cpu()
 
-                    for i, emb in enumerate(embeddings):
-                        # Recorte visual
-                        face_tensor = x_aligned[i].cpu().permute(1, 2, 0).numpy()
-                        face_image_np = (face_tensor * 128 + 127.5).astype(np.uint8)
-                        face_pil = Image.fromarray(face_image_np)
+                        for i, emb in enumerate(embeddings):
+                            # Recorte visual
+                            face_tensor = x_aligned[i].cpu().permute(1, 2, 0).numpy()
+                            face_image_np = (face_tensor * 128 + 127.5).astype(np.uint8)
+                            face_pil = Image.fromarray(face_image_np)
 
-                        # Guardar en DB Global
-                        ALL_FACES_DB.append({
-                            "id": str(uuid.uuid4()),
-                            "embedding": emb.numpy(),
-                            "image": image_to_base64(face_pil),
-                            "filename": f"video_frame_{count}.jpg", # Nombre simulado
-                            "manual_cluster": None
-                        })
-                        faces_found += 1
-            except Exception as e:
-                print(f"Error en frame {count}: {e}")
+                            # Guardar en Memoria
+                            ALL_FACES_DB.append({
+                                "id": str(uuid.uuid4()),
+                                "embedding": emb.numpy(),
+                                "image": image_to_base64(face_pil),
+                                "filename": f"{original_filename} (F{count})",
+                                "manual_cluster": None
+                            })
+                            VIDEO_STATUS["faces_found"] += 1
+                
+                except Exception as e:
+                    print(f"Error en frame {count}: {e}")
 
-        count += 1
+                # Actualizar estado de progreso
+                VIDEO_STATUS["frames_processed"] = count
+            
+            count += 1
 
-    cap.release()
-    print(f"Video terminado. Frames: {count}. Caras nuevas: {faces_found}")
+    except Exception as e:
+        print(f"Error fatal en video: {e}")
+    finally:
+        cap.release()
+        # Borrar archivo temporal
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        
+        # Guardar cambios en JSON
+        save_db_local()
+        
+        # 2. Actualizar estado: FIN
+        VIDEO_STATUS["processing"] = False
+        print(f"--> Hilo: Video terminado. {VIDEO_STATUS['faces_found']} caras nuevas.")
 
-# --- ENDPOINTS (API) ---
-
-@app.get("/api/clusters")
-def get_all_clusters():
-    return build_response()
 
 @app.post("/api/cluster-video")
-async def upload_video(file: UploadFile = File(...)):
-    # 1. Guardar el video en un archivo temporal físico
-    # (OpenCV necesita una ruta de archivo, no bytes en memoria ram)
+async def upload_video(
+    background_tasks: BackgroundTasks, # <--- Inyección de dependencia mágica de FastAPI
+    file: UploadFile = File(...)
+):
+    if VIDEO_STATUS["processing"]:
+        raise HTTPException(status_code=400, detail="Ya hay un video procesándose. Espera a que termine.")
+
+    # 1. Guardar archivo temporal
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
             shutil.copyfileobj(file.file, temp_video)
@@ -237,19 +265,46 @@ async def upload_video(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error guardando video: {e}")
 
-    # 2. Procesar el video
-    try:
-        # frame_skip=30 asumiendo video a 30fps (analiza 1 vez por segundo)
-        # Si quieres más precisión, baja el número (ej: 10). Si quieres más velocidad, súbelo (ej: 60).
-        process_video_file(temp_video_path, frame_skip=30)
-    finally:
-        # 3. Borrar archivo temporal siempre
-        if os.path.exists(temp_video_path):
-            os.remove(temp_video_path)
+    # 2. Lanzar la tarea en SEGUNDO PLANO (Thread)
+    # FastAPI ejecutará 'process_video_task' después de retornar la respuesta al usuario
+    background_tasks.add_task(process_video_task, temp_video_path, file.filename, frame_skip=30)
 
-    # 4. Guardar y Devolver respuesta actualizada
-    save_db_local()
+    # 3. Responder inmediatamente
+    return {"message": "Video recibido. Procesando en segundo plano.", "status": "started"}
+
+# --- ENDPOINTS (API) ---
+
+@app.get("/api/video-status")
+def get_video_status():
+    return VIDEO_STATUS
+
+
+@app.get("/api/clusters")
+def get_all_clusters():
     return build_response()
+
+@app.post("/api/cluster-video")
+async def upload_video(
+    background_tasks: BackgroundTasks, # <--- Inyección de dependencia mágica de FastAPI
+    file: UploadFile = File(...)
+):
+    if VIDEO_STATUS["processing"]:
+        raise HTTPException(status_code=400, detail="Ya hay un video procesándose. Espera a que termine.")
+
+    # 1. Guardar archivo temporal
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            shutil.copyfileobj(file.file, temp_video)
+            temp_video_path = temp_video.name
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error guardando video: {e}")
+
+    # 2. Lanzar la tarea en SEGUNDO PLANO (Thread)
+    # FastAPI ejecutará 'process_video_task' después de retornar la respuesta al usuario
+    background_tasks.add_task(process_video_task, temp_video_path, file.filename, frame_skip=30)
+
+    # 3. Responder inmediatamente
+    return {"message": "Video recibido. Procesando en segundo plano.", "status": "started"}
 
 
 @app.post("/api/cluster-faces")

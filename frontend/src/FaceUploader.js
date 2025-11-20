@@ -1,95 +1,110 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
+const API_URL = 'http://localhost:8000/api';
+
 function App() {
-  // --- ESTADOS ---
+  // --- ESTADOS DE LA APLICACIÓN ---
   const [activeTab, setActiveTab] = useState('upload'); // 'upload' | 'manage'
   const [files, setFiles] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Datos principales: { "clusterID": { name: "Juan", faces: [...] } }
-  const [clusters, setClusters] = useState({}); 
+  // Datos de clusters: { "0": {name: "Juan", faces: [...]}, ... }
+  const [clusters, setClusters] = useState({});
   
-  // Estados de la vista de gestión
+  // Estado para la gestión (Pestaña Manage)
   const [selectedClusterId, setSelectedClusterId] = useState(null);
   const [nameInput, setNameInput] = useState("");
 
-  // --- FUNCIONES ---
+  // Estado del Video en segundo plano
+  const [videoStatus, setVideoStatus] = useState(null);
+
+  // --- EFECTOS (POLLING) ---
+  
+  // Verificar estado del video cada 2 segundos
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`${API_URL}/video-status`);
+        setVideoStatus(res.data);
+
+        // Si el video acaba de terminar (estaba procesando y ahora no), recargamos datos
+        if (res.data.faces_found > 0 && !res.data.processing && videoStatus?.processing) {
+          alert(`✅ Video procesado. Se encontraron ${res.data.faces_found} caras nuevas.`);
+          loadClusters();
+        }
+      } catch (e) {
+        // Ignorar errores de conexión silenciosamente en polling
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [videoStatus?.processing]); // Dependencia para comparar estado anterior
+
+  // --- FUNCIONES DE CARGA ---
+
+  const loadClusters = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/clusters`);
+      setClusters(res.data);
+      return res.data;
+    } catch (error) {
+      console.error("Error cargando clusters:", error);
+      return {};
+    }
+  };
 
   const handleUpload = async () => {
-    if (!files) return alert("Selecciona archivos primero");
+    if (!files) return alert("⚠️ Selecciona archivos primero");
     setLoading(true);
-    
+
     try {
-      // Vamos a separar imágenes de videos o procesar uno por uno
-      // Para simplificar, asumamos que si hay un video, lo procesamos aparte
-      // o enviamos todo al endpoint correspondiente.
-      
-      // ESTRATEGIA: Iterar archivos y enviar según tipo
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const formData = new FormData();
-        formData.append(file.type.startsWith('video') ? 'file' : 'files', file);
 
         if (file.type.startsWith('video')) {
-           // Es un VIDEO -> Endpoint de Video
-           // Nota: Video suele ser pesado, mejor enviar uno por uno y esperar
-           await axios.post('http://localhost:8000/api/cluster-video', formData);
+           // --- SUBIDA DE VIDEO ---
+           formData.append('file', file);
+           await axios.post(`${API_URL}/cluster-video`, formData);
+           alert("🎥 El video se está procesando en segundo plano. Puedes continuar usando la app.");
         } else {
-           // Es una IMAGEN -> Endpoint de Imágenes
-           // Nota: El endpoint de imágenes espera una lista 'files', aquí mandamos 1 a 1 
-           // o podrías agruparlas. Para no romper tu código anterior, 
-           // si es imagen usaremos la logica de lote si quieres, 
-           // pero aquí un ejemplo simple enviando archivo:
-           
-           // Corrección para mantener compatibilidad con tu endpoint anterior
-           // que espera una lista:
-           const imgForm = new FormData();
-           imgForm.append('files', file);
-           await axios.post('http://localhost:8000/api/cluster-faces', imgForm);
+           // --- SUBIDA DE IMAGEN ---
+           // Nota: El backend espera una lista 'files', enviamos uno por uno para simplificar loop
+           formData.append('files', file);
+           await axios.post(`${API_URL}/cluster-faces`, formData);
         }
       }
-
-      // Al terminar de subir todo, pedimos el estado final (truco para refrescar)
-      // Podrías hacer un endpoint GET /api/clusters o simplemente
-      // llamar a cualquiera de los anteriores (el ultimo retorno tendrá la data)
       
-      // Para asegurar que tenemos la data fresca, haremos una llamada 'dummy' 
-      // o simplemente confiamos en que la última respuesta del loop trajo la data.
-      // Una forma limpia es tener un endpoint GET. 
-      // PERO, vamos a usar el endpoint de Rename (con datos dummy) 
-      // o Move para refrescar, o crear un GET simple.
+      // Recargar datos actualizados
+      const newData = await loadClusters();
       
-      // Creemos un GET simple en backend o usemos el ultimo response
-      // Hack rapido: volvemos a llamar rename con id invalido solo para recibir data actualizada
-      // O MEJOR: Crear endpoint GET en main.py (ver abajo)
-
-      const res = await axios.get('http://localhost:8000/api/clusters');
-      setClusters(res.data);
-      
+      // Cambiar a pestaña de gestión
       setActiveTab('manage');
       setFiles(null);
-      
-      // Auto seleccionar
-      const keys = Object.keys(res.data);
-      if (keys.length > 0) {
+
+      // Auto-seleccionar el primer cluster si no hay uno seleccionado
+      const keys = Object.keys(newData);
+      if (keys.length > 0 && !selectedClusterId) {
         setSelectedClusterId(keys[0]);
-        setNameInput(res.data[keys[0]].name);
+        setNameInput(newData[keys[0]].name);
       }
 
     } catch (error) {
       console.error(error);
-      alert("Error al procesar (Nota: Los videos largos pueden tardar)");
+      alert("❌ Error al subir archivos. Revisa la consola.");
     } finally {
       setLoading(false);
     }
   };
 
+  // --- FUNCIONES DE GESTIÓN ---
+
   const handleRename = async () => {
     if (!selectedClusterId) return;
     try {
-      const res = await axios.post('http://localhost:8000/api/rename-cluster', {
+      const res = await axios.post(`${API_URL}/rename-cluster`, {
         cluster_id: selectedClusterId,
         new_name: nameInput
       });
@@ -101,96 +116,94 @@ function App() {
 
   const handleMoveFace = async (faceId, targetClusterId) => {
     try {
-      // Si es "new_group", generamos un ID aleatorio en el cliente o enviamos flag
       let finalTargetId = targetClusterId;
       let newName = null;
 
+      // Lógica para crear nuevo grupo
       if (targetClusterId === 'new_group') {
         finalTargetId = 'manual_group_' + Date.now();
         newName = "Nuevo Grupo";
       }
 
-      const res = await axios.post('http://localhost:8000/api/move-face', {
+      const res = await axios.post(`${API_URL}/move-face`, {
         face_id: faceId,
         to_cluster_id: finalTargetId,
         new_cluster_name: newName
       });
       
       setClusters(res.data);
-
-      // Si el grupo actual se vació y desapareció, seleccionar otro
-      if (!res.data[selectedClusterId]) {
-         const keys = Object.keys(res.data);
-         if(keys.length > 0) setSelectedClusterId(keys[0]);
-         else setSelectedClusterId(null);
-      }
+      refreshSelection(res.data);
 
     } catch (error) {
-      console.error(error);
       alert("Error al mover imagen");
     }
   };
 
-  // Función para borrar una foto individual
   const handleDeleteFace = async (faceId) => {
     if (!window.confirm("¿Estás seguro de eliminar esta foto?")) return;
-    
     try {
-      const res = await axios.post('http://localhost:8000/api/delete-face', {
-        face_id: faceId
-      });
+      const res = await axios.post(`${API_URL}/delete-face`, { face_id: faceId });
       setClusters(res.data);
-      
-      // Si el cluster actual se queda vacío tras borrar, seleccionamos otro o null
-      if (!res.data[selectedClusterId]) {
-        const keys = Object.keys(res.data);
-        setSelectedClusterId(keys.length > 0 ? keys[0] : null);
-      }
+      refreshSelection(res.data);
     } catch (error) {
       alert("Error al eliminar foto");
     }
   };
 
-  // Función para borrar todo el cluster
   const handleDeleteCluster = async () => {
     if (!selectedClusterId) return;
-    const confirmMsg = `¿⚠️ CUIDADO: Estás a punto de borrar el grupo "${clusters[selectedClusterId].name}" y TODAS sus fotos?\n\nEsta acción no se puede deshacer.`;
+    const confirmMsg = `⚠️ ¿Borrar a "${clusters[selectedClusterId].name}" y TODAS sus fotos?\nEsta acción es irreversible.`;
     if (!window.confirm(confirmMsg)) return;
 
     try {
-      const res = await axios.post('http://localhost:8000/api/delete-cluster', {
-        cluster_id: selectedClusterId
-      });
+      const res = await axios.post(`${API_URL}/delete-cluster`, { cluster_id: selectedClusterId });
       setClusters(res.data);
       
-      // Como borramos el cluster actual, forzamos la selección al primero disponible (o null)
+      // Forzar selección a null o al primero
       const keys = Object.keys(res.data);
-      setSelectedClusterId(keys.length > 0 ? keys[0] : null);
-      
-      // Actualizar input de nombre si hay nuevo cluster, sino limpiar
-      if (keys.length > 0) setNameInput(res.data[keys[0]].name);
-      else setNameInput("");
-
+      if (keys.length > 0) {
+          setSelectedClusterId(keys[0]);
+          setNameInput(res.data[keys[0]].name);
+      } else {
+          setSelectedClusterId(null);
+          setNameInput("");
+      }
     } catch (error) {
-      alert("Error al eliminar cluster");
+      alert("Error al eliminar grupo");
     }
   };
 
-  // Helpers para renderizado
+  // Helper para mantener la UI consistente si el grupo actual desaparece
+  const refreshSelection = (newData) => {
+    if (!newData[selectedClusterId]) {
+      const keys = Object.keys(newData);
+      if (keys.length > 0) {
+          setSelectedClusterId(keys[0]);
+          setNameInput(newData[keys[0]].name);
+      } else {
+          setSelectedClusterId(null);
+      }
+    }
+  };
+
+  // Helper para color del badge
+  const getConfidenceColor = (score) => {
+    if (score >= 80) return '#2ecc71'; // Verde
+    if (score >= 50) return '#f1c40f'; // Amarillo
+    return '#e74c3c';                 // Rojo
+  };
+
+  // --- RENDERIZADO ---
+  
   const clusterList = Object.values(clusters);
   const selectedCluster = clusters[selectedClusterId];
-// Función para determinar color según porcentaje
-const getConfidenceColor = (score) => {
-  if (score >= 80) return '#2ecc71'; // Verde (Alta confianza)
-  if (score >= 50) return '#f1c40f'; // Amarillo (Media)
-  return '#e74c3c';                 // Rojo (Baja/Dudosa)
-};
 
   return (
     <div className="app-container">
+      
       {/* HEADER */}
       <header className="app-header">
-        <h1>🤖 Face Cluster AI</h1>
+        <h1>🕵️ Reconocimiento Facial IA</h1>
         <div className="tabs">
           <button 
             className={activeTab === 'upload' ? 'tab active' : 'tab'}
@@ -200,74 +213,101 @@ const getConfidenceColor = (score) => {
           </button>
           <button 
             className={activeTab === 'manage' ? 'tab active' : 'tab'}
-            onClick={() => setActiveTab('manage')}
-            disabled={clusterList.length === 0}
+            onClick={() => {
+                setActiveTab('manage');
+                if(!selectedClusterId && clusterList.length > 0) {
+                    loadClusters().then(data => {
+                        const keys = Object.keys(data);
+                        if(keys.length > 0) {
+                            setSelectedClusterId(keys[0]);
+                            setNameInput(data[keys[0]].name);
+                        }
+                    });
+                }
+            }}
           >
             👥 Gestionar
           </button>
         </div>
       </header>
 
-      {/* TAB 1: UPLOAD */}
+      {/* BARRA DE ESTADO DE VIDEO */}
+      {videoStatus && videoStatus.processing && (
+        <div className="video-progress-bar">
+           <div className="spinner"></div>
+           <span>
+             🎥 Procesando <b>{videoStatus.filename}</b> | 
+             Frame: {videoStatus.frames_processed} | 
+             Caras encontradas: {videoStatus.faces_found}
+           </span>
+        </div>
+      )}
+
+      {/* VISTA UPLOAD */}
       {activeTab === 'upload' && (
         <div className="tab-content upload-view">
           <div className="upload-zone">
-<input 
-  type="file" 
-  multiple 
-  accept="image/*, video/*"  // <--- ACEPTAR AMBOS
-  onChange={(e) => setFiles(e.target.files)} 
-/>
-            <p>{files ? `${files.length} fotos listas` : "Selecciona tus fotos aquí"}</p>
+            <input 
+              type="file" 
+              multiple 
+              accept="image/*, video/*" 
+              onChange={(e) => setFiles(e.target.files)} 
+            />
+            <p>
+                {files 
+                  ? `📂 ${files.length} archivo(s) seleccionado(s)` 
+                  : "Arrastra fotos o videos aquí"}
+            </p>
           </div>
           <button 
             className="btn-primary" 
             onClick={handleUpload} 
             disabled={loading || !files}
           >
-            {loading ? "Procesando..." : "Analizar Imágenes"}
+            {loading ? "⏳ Procesando..." : "🚀 Analizar Archivos"}
           </button>
         </div>
       )}
 
-      {/* TAB 2: MANAGE */}
-      {/* TAB 2: MANAGE */}
+      {/* VISTA GESTIÓN */}
       {activeTab === 'manage' && (
         <div className="tab-content manage-view">
           
+          {/* SIDEBAR LISTA */}
           <aside className="sidebar">
-            {/* ... (código del sidebar igual que antes) ... */}
-            <h3>Personas ({clusterList.length})</h3>
+            <h3>Personas detectadas ({clusterList.length})</h3>
             <ul>
-                {clusterList.map((c) => (
+              {clusterList.map((c) => (
                 <li 
-                    key={c.id}
-                    className={selectedClusterId === c.id ? 'active' : ''}
-                    onClick={() => { 
-                        setSelectedClusterId(c.id); 
-                        setNameInput(c.name); 
-                    }}
+                  key={c.id}
+                  className={selectedClusterId === c.id ? 'active' : ''}
+                  onClick={() => { 
+                    setSelectedClusterId(c.id); 
+                    setNameInput(c.name); 
+                  }}
                 >
-                    <span>{c.name}</span>
-                    <span className="badge">{c.faces.length}</span>
+                  <span>{c.name}</span>
+                  <span className="badge">{c.faces.length}</span>
                 </li>
-                ))}
+              ))}
             </ul>
           </aside>
 
+          {/* AREA PRINCIPAL */}
           <main className="main-area">
             {selectedCluster ? (
               <>
-                <div className="cluster-actions">
-                  <input 
-                    type="text" 
-                    value={nameInput} 
-                    onChange={(e) => setNameInput(e.target.value)}
-                    placeholder="Nombre de la persona"
-                  />
-                  <button className="btn-save" onClick={handleRename}>Guardar</button>
+                <div className="cluster-actions-header">
+                  <div className="input-group">
+                      <input 
+                        type="text" 
+                        value={nameInput} 
+                        onChange={(e) => setNameInput(e.target.value)}
+                        placeholder="Nombre de la persona"
+                      />
+                      <button className="btn-save" onClick={handleRename}>Guardar Nombre</button>
+                  </div>
                   
-                  {/* --- NUEVO BOTÓN BORRAR CLUSTER --- */}
                   <button className="btn-delete-group" onClick={handleDeleteCluster}>
                     🗑️ Eliminar Grupo
                   </button>
@@ -282,15 +322,16 @@ const getConfidenceColor = (score) => {
                           alt="face" 
                         />
                         
-                        {/* --- NUEVO BOTÓN BORRAR FOTO (X) --- */}
+                        {/* Botón Eliminar Foto */}
                         <button 
                             className="btn-delete-face" 
                             onClick={() => handleDeleteFace(face.id)}
-                            title="Eliminar esta foto"
+                            title="Eliminar foto"
                         >
                             ×
                         </button>
 
+                        {/* Badge de Confianza */}
                         <div 
                           className="confidence-badge" 
                           style={{ backgroundColor: getConfidenceColor(face.confidence) }}
@@ -319,7 +360,10 @@ const getConfidenceColor = (score) => {
                 </div>
               </>
             ) : (
-              <div className="empty-state">Selecciona una persona del menú o sube fotos</div>
+              <div className="empty-state">
+                <p>👈 Selecciona una persona del menú</p>
+                <small>O sube nuevas fotos en la pestaña "Subir"</small>
+              </div>
             )}
           </main>
         </div>

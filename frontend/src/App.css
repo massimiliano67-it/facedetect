@@ -1,0 +1,423 @@
+/* =========================================
+   RESET Y ESTILOS GLOBALES
+   ========================================= */
+:root {
+  --primary-color: #3498db;
+  --primary-dark: #2980b9;
+  --header-bg: #2c3e50;
+  --bg-light: #f4f4f9;
+  --sidebar-width: 280px;
+  --text-color: #333;
+  --border-color: #ecf0f1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-light);
+  color: var(--text-color);
+  overflow: hidden; /* Evita scroll en el body, usamos scroll interno */
+}
+
+/* =========================================
+   LAYOUT PRINCIPAL
+   ========================================= */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* HEADER */
+.app-header {
+  background-color: var(--header-bg);
+  color: white;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  z-index: 10;
+}
+
+.app-header h1 {
+  font-size: 1.2rem;
+  margin: 0;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* TABS (Pestañas) */
+.tabs {
+  display: flex;
+  height: 100%;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: #bdc3c7;
+  padding: 0 25px;
+  font-size: 1rem;
+  cursor: pointer;
+  height: 100%;
+  transition: all 0.2s ease;
+  outline: none;
+  font-weight: 500;
+}
+
+.tab:hover {
+  color: white;
+  background-color: rgba(255,255,255,0.05);
+}
+
+.tab.active {
+  color: white;
+  background-color: rgba(255,255,255,0.1);
+  border-bottom: 4px solid var(--primary-color);
+}
+
+.tab:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* CONTENEDOR DE VISTAS */
+.tab-content {
+  flex: 1; /* Ocupa el resto de la pantalla */
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+/* =========================================
+   VISTA 1: UPLOAD (SUBIDA)
+   ========================================= */
+.upload-view {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-light);
+  gap: 30px;
+}
+
+.upload-zone {
+  width: 400px;
+  padding: 50px;
+  border: 3px dashed #bdc3c7;
+  border-radius: 15px;
+  background-color: white;
+  text-align: center;
+  transition: border-color 0.3s;
+  cursor: pointer;
+}
+
+.upload-zone:hover {
+  border-color: var(--primary-color);
+  background-color: #fbfbfb;
+}
+
+.upload-zone p {
+  margin-top: 15px;
+  color: #7f8c8d;
+  font-size: 1.1rem;
+}
+
+/* BOTONES GENERALES */
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  padding: 12px 40px;
+  font-size: 1rem;
+  border-radius: 30px;
+  cursor: pointer;
+  font-weight: 600;
+  box-shadow: 0 4px 6px rgba(52, 152, 219, 0.3);
+  transition: transform 0.1s, background-color 0.2s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--primary-dark);
+  transform: translateY(-2px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-primary:disabled {
+  background-color: #95a5a6;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* =========================================
+   VISTA 2: MANAGE (GESTIÓN)
+   ========================================= */
+.manage-view {
+  flex-direction: row;
+}
+
+/* SIDEBAR (Izquierda) */
+.sidebar {
+  width: var(--sidebar-width);
+  background-color: white;
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.sidebar h3 {
+  padding: 20px;
+  margin: 0;
+  font-size: 1rem;
+  color: #7f8c8d;
+  border-bottom: 1px solid var(--border-color);
+  background-color: #fafafa;
+}
+
+.sidebar ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar li {
+  padding: 15px 20px;
+  border-bottom: 1px solid #f5f5f5;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.2s;
+}
+
+.sidebar li:hover {
+  background-color: #f0f7fa;
+}
+
+.sidebar li.active {
+  background-color: #ebf5fb;
+  border-left: 5px solid var(--primary-color);
+  padding-left: 15px; /* Compensar borde */
+}
+
+.sidebar li span {
+  font-weight: 500;
+}
+
+.badge {
+  background-color: #dfe6e9;
+  color: #636e72;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.sidebar li.active .badge {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+/* AREA PRINCIPAL (Derecha) */
+.main-area {
+  flex: 1;
+  padding: 30px;
+  overflow-y: auto;
+  background-color: #fdfdfd;
+}
+
+/* Cabecera del Cluster (Input de nombre) */
+.cluster-actions {
+  display: flex;
+  gap: 10px;
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+  margin-bottom: 30px;
+  align-items: center;
+}
+
+.cluster-actions input {
+  flex: 1;
+  padding: 10px 15px;
+  font-size: 1.1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.cluster-actions input:focus {
+  border-color: var(--primary-color);
+}
+
+.cluster-actions button {
+  padding: 10px 20px;
+  background-color: #2ecc71;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cluster-actions button:hover {
+  background-color: #27ae60;
+}
+
+/* GRID DE ROSTROS */
+.faces-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+/* TARJETA DE ROSTRO (Card) */
+.face-card {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 3px 6px rgba(0,0,0,0.08);
+  width: 160px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.face-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+}
+
+/* Contenedor Imagen + Badge */
+.image-container {
+  position: relative;
+  width: 100%;
+  height: 140px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.image-container img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* BADGE DE CONFIANZA (%) */
+.confidence-badge {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  color: white;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  z-index: 2;
+}
+
+/* Controles (Select y Nombre archivo) */
+.card-controls select {
+  width: 100%;
+  padding: 5px;
+  font-size: 0.85rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: white;
+  cursor: pointer;
+}
+
+.filename {
+  font-size: 0.75rem;
+  color: #95a5a6;
+  margin-top: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+/* ESTADOS VACÍOS */
+.empty-state {
+  text-align: center;
+  margin-top: 100px;
+  color: #bdc3c7;
+  font-size: 1.2rem;
+  font-weight: 300;
+}
+
+/* Botón Guardar (Verde) */
+.btn-save {
+  padding: 10px 20px;
+  background-color: #2ecc71;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-save:hover { background-color: #27ae60; }
+
+/* Botón Borrar Grupo (Rojo Grande) */
+.btn-delete-group {
+  padding: 10px 20px;
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: auto; /* Lo empuja a la derecha si usas flex */
+}
+.btn-delete-group:hover { background-color: #c0392b; }
+
+/* Botón Borrar Foto Individual (X pequeña) */
+.btn-delete-face {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+  background-color: rgba(231, 76, 60, 0.9);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0; /* Oculto por defecto */
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 5;
+}
+
+/* Mostrar la X solo al pasar el mouse sobre la tarjeta */
+.image-container:hover .btn-delete-face {
+  opacity: 1;
+}
+
+.btn-delete-face:hover {
+  background-color: #c0392b;
+  transform: scale(1.1);
+}

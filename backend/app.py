@@ -11,7 +11,11 @@ import io
 import base64
 import json
 import uuid
+import cv2
+import tempfile
+import shutil
 import os
+# ... (el resto de tus imports: FastAPI, torch, etc)
 from typing import List, Optional
 
 # --- INICIALIZACIÓN ---
@@ -155,7 +159,98 @@ def build_response():
 
     return final_response
 
+# --- NUEVA LÓGICA PARA VIDEO ---
+
+def process_video_file(file_path, frame_skip=24):
+    """
+    Lee un video y extrae rostros.
+    frame_skip: Cada cuántos frames analizar (24 aprox = 1 segundo)
+    """
+    global ALL_FACES_DB
+    
+    cap = cv2.VideoCapture(file_path)
+    count = 0
+    faces_found = 0
+    
+    print(f"Iniciando procesamiento de video: {file_path}")
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break # Fin del video
+
+        # Procesamos solo 1 de cada 'frame_skip' frames para velocidad
+        if count % frame_skip == 0:
+            try:
+                # OpenCV usa BGR, PIL usa RGB. Convertimos:
+                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(image_rgb)
+
+                # --- EL MISMO PROCESO DE SIEMPRE ---
+                x_aligned = mtcnn(pil_img)
+
+                if x_aligned is not None:
+                    # Asegurar dimensiones
+                    if len(x_aligned.shape) == 3:
+                        x_aligned = x_aligned.unsqueeze(0)
+                    
+                    x_aligned = x_aligned.to(device)
+                    embeddings = resnet(x_aligned).detach().cpu()
+
+                    for i, emb in enumerate(embeddings):
+                        # Recorte visual
+                        face_tensor = x_aligned[i].cpu().permute(1, 2, 0).numpy()
+                        face_image_np = (face_tensor * 128 + 127.5).astype(np.uint8)
+                        face_pil = Image.fromarray(face_image_np)
+
+                        # Guardar en DB Global
+                        ALL_FACES_DB.append({
+                            "id": str(uuid.uuid4()),
+                            "embedding": emb.numpy(),
+                            "image": image_to_base64(face_pil),
+                            "filename": f"video_frame_{count}.jpg", # Nombre simulado
+                            "manual_cluster": None
+                        })
+                        faces_found += 1
+            except Exception as e:
+                print(f"Error en frame {count}: {e}")
+
+        count += 1
+
+    cap.release()
+    print(f"Video terminado. Frames: {count}. Caras nuevas: {faces_found}")
+
 # --- ENDPOINTS (API) ---
+
+@app.get("/api/clusters")
+def get_all_clusters():
+    return build_response()
+
+@app.post("/api/cluster-video")
+async def upload_video(file: UploadFile = File(...)):
+    # 1. Guardar el video en un archivo temporal físico
+    # (OpenCV necesita una ruta de archivo, no bytes en memoria ram)
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            shutil.copyfileobj(file.file, temp_video)
+            temp_video_path = temp_video.name
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error guardando video: {e}")
+
+    # 2. Procesar el video
+    try:
+        # frame_skip=30 asumiendo video a 30fps (analiza 1 vez por segundo)
+        # Si quieres más precisión, baja el número (ej: 10). Si quieres más velocidad, súbelo (ej: 60).
+        process_video_file(temp_video_path, frame_skip=30)
+    finally:
+        # 3. Borrar archivo temporal siempre
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+
+    # 4. Guardar y Devolver respuesta actualizada
+    save_db_local()
+    return build_response()
+
 
 @app.post("/api/cluster-faces")
 async def upload_and_cluster(files: List[UploadFile] = File(...)):

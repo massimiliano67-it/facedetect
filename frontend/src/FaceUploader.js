@@ -18,29 +18,69 @@ function App() {
   // --- FUNCIONES ---
 
   const handleUpload = async () => {
-    if (!files) return alert("Selecciona fotos primero");
+    if (!files) return alert("Selecciona archivos primero");
     setLoading(true);
     
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append('files', files[i]);
-    }
-
     try {
-      const res = await axios.post('http://localhost:8000/api/cluster-faces', formData);
+      // Vamos a separar imágenes de videos o procesar uno por uno
+      // Para simplificar, asumamos que si hay un video, lo procesamos aparte
+      // o enviamos todo al endpoint correspondiente.
+      
+      // ESTRATEGIA: Iterar archivos y enviar según tipo
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const formData = new FormData();
+        formData.append(file.type.startsWith('video') ? 'file' : 'files', file);
+
+        if (file.type.startsWith('video')) {
+           // Es un VIDEO -> Endpoint de Video
+           // Nota: Video suele ser pesado, mejor enviar uno por uno y esperar
+           await axios.post('http://localhost:8000/api/cluster-video', formData);
+        } else {
+           // Es una IMAGEN -> Endpoint de Imágenes
+           // Nota: El endpoint de imágenes espera una lista 'files', aquí mandamos 1 a 1 
+           // o podrías agruparlas. Para no romper tu código anterior, 
+           // si es imagen usaremos la logica de lote si quieres, 
+           // pero aquí un ejemplo simple enviando archivo:
+           
+           // Corrección para mantener compatibilidad con tu endpoint anterior
+           // que espera una lista:
+           const imgForm = new FormData();
+           imgForm.append('files', file);
+           await axios.post('http://localhost:8000/api/cluster-faces', imgForm);
+        }
+      }
+
+      // Al terminar de subir todo, pedimos el estado final (truco para refrescar)
+      // Podrías hacer un endpoint GET /api/clusters o simplemente
+      // llamar a cualquiera de los anteriores (el ultimo retorno tendrá la data)
+      
+      // Para asegurar que tenemos la data fresca, haremos una llamada 'dummy' 
+      // o simplemente confiamos en que la última respuesta del loop trajo la data.
+      // Una forma limpia es tener un endpoint GET. 
+      // PERO, vamos a usar el endpoint de Rename (con datos dummy) 
+      // o Move para refrescar, o crear un GET simple.
+      
+      // Creemos un GET simple en backend o usemos el ultimo response
+      // Hack rapido: volvemos a llamar rename con id invalido solo para recibir data actualizada
+      // O MEJOR: Crear endpoint GET en main.py (ver abajo)
+
+      const res = await axios.get('http://localhost:8000/api/clusters');
       setClusters(res.data);
       
-      // Auto-seleccionar el primer cluster y cambiar tab
+      setActiveTab('manage');
+      setFiles(null);
+      
+      // Auto seleccionar
       const keys = Object.keys(res.data);
       if (keys.length > 0) {
         setSelectedClusterId(keys[0]);
         setNameInput(res.data[keys[0]].name);
       }
-      setActiveTab('manage');
-      setFiles(null); // Limpiar selección
+
     } catch (error) {
       console.error(error);
-      alert("Error al procesar imágenes");
+      alert("Error al procesar (Nota: Los videos largos pueden tardar)");
     } finally {
       setLoading(false);
     }
@@ -172,12 +212,12 @@ const getConfidenceColor = (score) => {
       {activeTab === 'upload' && (
         <div className="tab-content upload-view">
           <div className="upload-zone">
-            <input 
-              type="file" 
-              multiple 
-              accept="image/*" 
-              onChange={(e) => setFiles(e.target.files)} 
-            />
+<input 
+  type="file" 
+  multiple 
+  accept="image/*, video/*"  // <--- ACEPTAR AMBOS
+  onChange={(e) => setFiles(e.target.files)} 
+/>
             <p>{files ? `${files.length} fotos listas` : "Selecciona tus fotos aquí"}</p>
           </div>
           <button 

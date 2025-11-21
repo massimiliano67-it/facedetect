@@ -44,7 +44,10 @@ VIDEO_STATUS = {
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 print(f"Corriendo IA en: {device}")
 
-mtcnn = MTCNN(keep_all=True, device=device, margin=0, min_face_size=20)
+#mtcnn = MTCNN(keep_all=True, device=device, margin=0, min_face_size=20)
+# min_face_size=10 ayuda a detectar caras más lejanas en fotos grupales
+mtcnn = MTCNN(keep_all=True, device=device, margin=0, min_face_size=10)
+
 resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 
 # --- BASE DE DATOS EN MEMORIA ---
@@ -168,19 +171,92 @@ def build_response():
 
     return final_response
 
+
+def get_all_embeddings_by_cluster():
+    """
+    Devuelve un diccionario con TODOS los embeddings organizados por cluster.
+    Estructura: { "cluster_id": [vector1, vector2, vector3...] }
+    """
+    if not ALL_FACES_DB:
+        return {}
+    
+    # 1. Simulamos un clustering rápido para saber el estado actual
+    all_embeddings = [f["embedding"] for f in ALL_FACES_DB]
+    clustering = DBSCAN(eps=0.75, min_samples=1, metric='euclidean').fit(all_embeddings)
+    labels = clustering.labels_
+
+    cluster_map = {}
+
+    for i, label in enumerate(labels):
+        face = ALL_FACES_DB[i]
+        
+        # Respetar asignación manual
+        if face["manual_cluster"] is not None:
+            cid = face["manual_cluster"]
+        else:
+            cid = str(label)
+        
+        if cid not in cluster_map:
+            cluster_map[cid] = []
+        
+        # Guardamos el vector puro
+        cluster_map[cid].append(face["embedding"])
+
+    return cluster_map
+
+def find_best_match_nearest_neighbor(new_embedding, cluster_map, threshold=0.65):
+    """
+    Compara la cara nueva contra TODAS las caras de cada cluster.
+    Si se parece mucho a CUALQUIERA de las fotos del cluster, es un match.
+    
+    threshold: 0.65 es un poco más flexible que 0.6 para fotos grupales.
+    """
+    best_id = None
+    global_min_dist = float('inf')
+
+    for cid, embeddings_list in cluster_map.items():
+        # Calculamos la distancia contra CADA foto de este grupo
+        for known_emb in embeddings_list:
+            dist = np.linalg.norm(new_embedding - known_emb)
+            
+            if dist < global_min_dist:
+                global_min_dist = dist
+                # Si encontramos una foto muy parecida, guardamos ese ID candidato
+                if dist < threshold:
+                    best_id = cid
+
+    return best_id, global_min_dist
+
+def find_best_match(new_embedding, centroids, threshold=0.6):
+    """
+    Compara una cara nueva con los centroides conocidos.
+    threshold: Distancia máxima (Menor = más estricto). 0.6 es buen punto para FaceNet.
+    """
+    best_id = None
+    min_dist = float('inf')
+
+    for cid, centroid in centroids.items():
+        dist = np.linalg.norm(new_embedding - centroid)
+        if dist < min_dist:
+            min_dist = dist
+            best_id = cid
+
+    if min_dist < threshold:
+        return best_id, min_dist
+    return None, min_dist
+
 # --- NUEVA LÓGICA PARA VIDEO ---
 
 def process_video_task(temp_file_path, original_filename, frame_skip=24):
-    """
-    Esta función correrá en un HILO SEPARADO (Background).
-    """
     global ALL_FACES_DB, VIDEO_STATUS
     
-    # 1. Actualizar estado: INICIO
     VIDEO_STATUS["processing"] = True
     VIDEO_STATUS["filename"] = original_filename
     VIDEO_STATUS["frames_processed"] = 0
     VIDEO_STATUS["faces_found"] = 0
+
+    # 1. Pre-calcular a quién conocemos
+    known_centroids = get_known_centroids()
 
     cap = cv2.VideoCapture(temp_file_path)
     count = 0
@@ -190,16 +266,12 @@ def process_video_task(temp_file_path, original_filename, frame_skip=24):
     try:
         while cap.isOpened():
             ret, frame = cap.read()
-            if not ret:
-                break 
+            if not ret: break 
 
             if count % frame_skip == 0:
                 try:
-                    # Conversión color
                     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(image_rgb)
-
-                    # Detección (MTCNN)
                     x_aligned = mtcnn(pil_img)
 
                     if x_aligned is not None:
@@ -210,43 +282,37 @@ def process_video_task(temp_file_path, original_filename, frame_skip=24):
                         embeddings = resnet(x_aligned).detach().cpu()
 
                         for i, emb in enumerate(embeddings):
-                            # Recorte visual
+                            emb_np = emb.numpy()
+                            
+                            # --- RECONOCIMIENTO EN VIDEO ---
+                            matched_id, _ = find_best_match(emb_np, known_centroids, threshold=0.6)
+                            # -------------------------------
+
                             face_tensor = x_aligned[i].cpu().permute(1, 2, 0).numpy()
                             face_image_np = (face_tensor * 128 + 127.5).astype(np.uint8)
                             face_pil = Image.fromarray(face_image_np)
 
-                            # Guardar en Memoria
                             ALL_FACES_DB.append({
                                 "id": str(uuid.uuid4()),
-                                "embedding": emb.numpy(),
+                                "embedding": emb_np,
                                 "image": image_to_base64(face_pil),
                                 "filename": f"{original_filename} (F{count})",
-                                "manual_cluster": None
+                                "manual_cluster": matched_id # Asignamos si lo conocemos
                             })
                             VIDEO_STATUS["faces_found"] += 1
+                except Exception:
+                    pass
                 
-                except Exception as e:
-                    print(f"Error en frame {count}: {e}")
-
-                # Actualizar estado de progreso
                 VIDEO_STATUS["frames_processed"] = count
-            
             count += 1
 
     except Exception as e:
-        print(f"Error fatal en video: {e}")
+        print(f"Error video: {e}")
     finally:
         cap.release()
-        # Borrar archivo temporal
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        
-        # Guardar cambios en JSON
+        if os.path.exists(temp_file_path): os.remove(temp_file_path)
         save_db_local()
-        
-        # 2. Actualizar estado: FIN
         VIDEO_STATUS["processing"] = False
-        print(f"--> Hilo: Video terminado. {VIDEO_STATUS['faces_found']} caras nuevas.")
 
 
 @app.post("/api/cluster-video")
@@ -311,41 +377,65 @@ async def upload_video(
 async def upload_and_cluster(files: List[UploadFile] = File(...)):
     global ALL_FACES_DB
     
-    print(f"Procesando {len(files)} imágenes nuevas...")
+    print(f"--- Procesando lote de {len(files)} archivos ---")
+
+    # 1. Obtener mapa completo de caras conocidas
+    known_clusters_map = get_all_embeddings_by_cluster()
 
     for file in files:
         try:
-            # Leer archivo
             contents = await file.read()
             img = Image.open(io.BytesIO(contents)).convert('RGB')
-            
-            # Detectar rostros
             x_aligned = mtcnn(img)
 
             if x_aligned is not None:
-                # Manejo de dimensiones (si detecta 1 o varias caras)
+                # Manejo de dimensiones
                 if len(x_aligned.shape) == 3:
                     x_aligned = x_aligned.unsqueeze(0)
                 
                 x_aligned = x_aligned.to(device)
-                
-                # Generar vectores (embeddings)
                 embeddings = resnet(x_aligned).detach().cpu()
 
+                # Iteramos por cada cara encontrada en la foto
                 for i, emb in enumerate(embeddings):
-                    # Preparar imagen recortada para visualización
+                    emb_np = emb.numpy()
+                    
+                    # --- NUEVA LÓGICA: VECINO MÁS CERCANO ---
+                    # Subimos un poco el threshold a 0.65 o 0.7 para tolerar fotos grupales
+                    # Si ves falsos positivos, bájalo a 0.6
+                    matched_id, dist = find_best_match_nearest_neighbor(
+                        emb_np, 
+                        known_clusters_map, 
+                        threshold=0.65 
+                    )
+                    
+                    manual_id = None
+                    if matched_id:
+                        cluster_name = CLUSTER_NAMES.get(matched_id, f"ID {matched_id}")
+                        print(f"✅ MATCH ENCONTRADO: {file.filename} (Cara {i}) -> {cluster_name} (Dist: {dist:.4f})")
+                        manual_id = matched_id
+                    else:
+                        print(f"⚠️ NO MATCH: {file.filename} (Cara {i}) -> Distancia más cercana: {dist:.4f}")
+                    # ----------------------------------------
+
                     face_tensor = x_aligned[i].cpu().permute(1, 2, 0).numpy()
                     face_image_np = (face_tensor * 128 + 127.5).astype(np.uint8)
                     face_pil = Image.fromarray(face_image_np)
 
-                    # GUARDAR EN MEMORIA GLOBAL
                     ALL_FACES_DB.append({
                         "id": str(uuid.uuid4()),
-                        "embedding": emb.numpy(),
+                        "embedding": emb_np,
                         "image": image_to_base64(face_pil),
                         "filename": file.filename,
-                        "manual_cluster": None # Inicialmente decide la IA
+                        "manual_cluster": manual_id
                     })
+                    
+                    # Actualizamos el mapa en tiempo real para que si hay 2 fotos de Juan 
+                    # en este mismo lote, la segunda reconozca a la primera
+                    if manual_id:
+                         if manual_id not in known_clusters_map: known_clusters_map[manual_id] = []
+                         known_clusters_map[manual_id].append(emb_np)
+
         except Exception as e:
             print(f"Error en {file.filename}: {e}")
 

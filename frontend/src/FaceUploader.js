@@ -16,6 +16,9 @@ function App() {
   // Estado para la gestión (Pestaña Manage)
   const [selectedClusterId, setSelectedClusterId] = useState(null);
   const [nameInput, setNameInput] = useState("");
+  
+  // Estado para selección múltiple (Batch Delete)
+  const [selectedForBatch, setSelectedForBatch] = useState(new Set());
 
   // Estado del Video en segundo plano
   const [videoStatus, setVideoStatus] = useState(null);
@@ -173,6 +176,40 @@ function App() {
     }
   };
 
+  // --- BATCH DELETE LOGIC ---
+  
+  const toggleBatchSelection = (e, clusterId) => {
+    e.stopPropagation(); // Evitar que seleccione el cluster como activo
+    const newSet = new Set(selectedForBatch);
+    if (newSet.has(clusterId)) {
+      newSet.delete(clusterId);
+    } else {
+      newSet.add(clusterId);
+    }
+    setSelectedForBatch(newSet);
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedForBatch.size === 0) return;
+    
+    const confirmMsg = `⚠️ ¿Estás seguro de eliminar ${selectedForBatch.size} grupos seleccionados?\nSe borrarán TODAS sus fotos.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const res = await axios.post(`${API_URL}/delete-clusters`, { 
+        cluster_ids: Array.from(selectedForBatch) 
+      });
+      
+      setClusters(res.data);
+      setSelectedForBatch(new Set()); // Limpiar selección
+      refreshSelection(res.data);
+
+    } catch (error) {
+      console.error(error);
+      alert("Error al eliminar grupos seleccionados");
+    }
+  };
+
   // Helper para mantener la UI consistente si el grupo actual desaparece
   const refreshSelection = (newData) => {
     if (!newData[selectedClusterId]) {
@@ -182,6 +219,7 @@ function App() {
           setNameInput(newData[keys[0]].name);
       } else {
           setSelectedClusterId(null);
+          setNameInput("");
       }
     }
   };
@@ -275,7 +313,33 @@ function App() {
           
           {/* SIDEBAR LISTA */}
           <aside className="sidebar">
-            <h3>Personas detectadas ({clusterList.length})</h3>
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              padding: '20px', 
+              borderBottom: '1px solid var(--border-color)' 
+            }}>
+              <h3 style={{ padding: 0, border: 'none', margin: 0 }}>Personas ({clusterList.length})</h3>
+              {selectedForBatch.size > 0 && (
+                <button 
+                  onClick={handleBatchDelete}
+                  style={{
+                    background: 'var(--danger)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  Borrar ({selectedForBatch.size})
+                </button>
+              )}
+            </div>
+            
             <ul>
               {clusterList.map((c) => (
                 <li 
@@ -286,7 +350,15 @@ function App() {
                     setNameInput(c.name); 
                   }}
                 >
-                  <span>{c.name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={selectedForBatch.has(c.id)}
+                      onClick={(e) => toggleBatchSelection(e, c.id)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span>{c.name}</span>
+                  </div>
                   <span className="badge">{c.faces.length}</span>
                 </li>
               ))}
